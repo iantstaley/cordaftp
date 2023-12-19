@@ -1,0 +1,161 @@
+buildscript {
+    ext.corda_release_version = '1.0.0'
+    ext.corda_gradle_plugins_version = '1.0.0'
+    ext.kotlin_version = '1.1.2'
+    ext.junit_version = '4.12'
+    ext.quasar_version = '0.7.6'
+
+    ext.username = "corda"
+    ext.password = "corda_initial_password"
+    ext.client_port = 10009
+
+    repositories {
+        mavenLocal()
+        mavenCentral()
+        jcenter()
+    }
+
+    dependencies {
+        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
+        classpath "net.corda.plugins:publish-utils:$corda_gradle_plugins_version"
+        classpath "net.corda.plugins:cordformation:$corda_gradle_plugins_version"
+        classpath "net.corda.plugins:quasar-utils:$corda_gradle_plugins_version"
+    }
+
+}
+
+repositories {
+    mavenLocal()
+    jcenter()
+    mavenCentral()
+    maven { url 'https://dl.bintray.com/kotlin/exposed' }
+    maven { url 'https://jitpack.io' }
+    maven { url 'https://ci-artifactory.corda.r3cev.com/artifactory/corda-releases' }
+    maven { url 'https://ci-artifactory.corda.r3cev.com/artifactory/corda-dev/' }
+}
+
+apply plugin: 'kotlin'
+apply plugin: 'idea'
+apply plugin: 'net.corda.plugins.publish-utils'
+apply plugin: 'net.corda.plugins.cordformation'
+apply plugin: 'net.corda.plugins.quasar-utils'
+apply plugin: 'maven-publish'
+
+sourceSets {
+    main {
+        resources {
+            srcDir "config/dev"
+        }
+    }
+    test {
+        resources {
+            srcDir "config/test"
+        }
+    }
+}
+
+dependencies {
+    compile "org.jetbrains.kotlin:kotlin-stdlib-jre8:$kotlin_version"
+    testCompile "org.jetbrains.kotlin:kotlin-test:$kotlin_version"
+    testCompile "junit:junit:$junit_version"
+
+    // Corda integration dependencies
+    cordaCompile "net.corda:corda-core:$corda_release_version"
+    cordaCompile "net.corda:corda-finance:$corda_release_version"
+    cordaCompile "net.corda:corda-jackson:$corda_release_version"
+    cordaCompile "net.corda:corda-rpc:$corda_release_version"
+    cordaCompile "net.corda:corda-node-api:$corda_release_version"
+    cordaCompile "net.corda:corda-webserver-impl:$corda_release_version"
+    cordaRuntime "net.corda:corda:$corda_release_version"
+    cordaRuntime "net.corda:corda-webserver:$corda_release_version"
+
+    testCompile "net.corda:corda-test-utils:$corda_release_version"
+    testCompile "net.corda:corda-node-driver:$corda_release_version"
+
+    // GraphStream: For visualisation (required by TemplateClientRPC app)
+    compile "org.graphstream:gs-core:1.3"
+    compile("org.graphstream:gs-ui:1.3") {
+        exclude group: "bouncycastle"
+    }
+
+    // CorDapp dependencies
+    // Specify your cordapp's dependencies below, including dependent cordapps
+
+    compile "io.reactivex:rxjava:1.2.4"
+}
+
+tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).all {
+    kotlinOptions {
+        languageVersion = "1.1"
+        apiVersion = "1.1"
+        jvmTarget = "1.8"
+        javaParameters = true   // Useful for reflection.
+    }
+}
+
+def copyConfigTask(nodeName) {
+    return tasks.create("copy${nodeName}", Copy) {
+        from "${nodeName}.json"
+        into "./build/nodes/${nodeName}/"
+        rename {
+            "cordaftp.json"
+        }
+    }
+}
+
+task deployNodes(type: net.corda.plugins.Cordform, dependsOn: ['jar', copyConfigTask("CorpA"), copyConfigTask("CorpB")]) {
+    directory "./build/nodes"
+    networkMap "O=R3Corp,OU=corda,L=London,C=GB"
+    node {
+        name "O=R3Corp,OU=corda,L=London,C=GB"
+        advertisedServices = ["corda.notary.validating"]
+        p2pPort 10002
+        rpcPort 10003
+        cordapps = []
+    }
+    node {
+        name "O=CorpA,L=Paris,C=FR"
+        advertisedServices = []
+        p2pPort 10005
+        rpcPort 10006
+        cordapps = []
+        // TODO: Replace username / password with vars such that we can DRY the username, password
+        rpcUsers = [[ "user": "corda", "password": "corda_initial_password", "permissions": ["StartFlow.net.corda.cordaftp.TxFileInitiator"]]]
+    }
+    node {
+        name "O=CorpB,L=Rome,C=IT"
+        advertisedServices = []
+        p2pPort 10008
+        rpcPort 10009
+        cordapps = []
+        // TODO: Ditto
+        rpcUsers = [[ "user": "corda", "password": "corda_initial_password", "permissions": ["StartFlow.net.corda.cordaftp.TxFileInitiator"]]]
+    }
+}
+
+idea {
+    module {
+        downloadJavadoc = true // defaults to false
+        downloadSources = true
+    }
+}
+
+publishing {
+    publications {
+        jarAndSources(MavenPublication) {
+            from components.java
+            artifactId 'net.corda.cordaftp'
+
+            artifact sourceJar
+            artifact javadocJar
+        }
+    }
+}
+
+
+task(runClientB, dependsOn: 'classes', type: JavaExec) {
+    classpath = sourceSets.main.runtimeClasspath
+    main = 'net.corda.cordaftp.SenderKt'
+    args "localhost:$client_port", "$username", "$password", "build/nodes/CorpB/cordaftp.json"
+}
+
